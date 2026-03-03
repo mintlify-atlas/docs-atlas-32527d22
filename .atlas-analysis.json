@@ -1,0 +1,58 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "OpenEnvX",
+  "projectDescription": "Local-first runtime for development with proxy, services, and env integration built for agentic workflows.",
+  "theme": "aspen",
+  "primaryColor": "#0EA5E9",
+  "lightColor": "#7DD3FC",
+  "darkColor": "#0369A1",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "installation",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/running-applications",
+          "guides/managing-routes",
+          "guides/tls-certificates",
+          "guides/agent-integration"
+        ]
+      },
+      {
+        "group": "CLI Reference",
+        "pages": [
+          "cli/overview",
+          "cli/proxy-run",
+          "cli/proxy-stop"
+        ]
+      },
+      {
+        "group": "Advanced",
+        "pages": [
+          "advanced/configuration",
+          "advanced/state-management",
+          "advanced/troubleshooting"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Local HTTPS proxy with *.localhost domains",
+    "Automatic TLS certificate generation",
+    "Route registration and management",
+    "Process lifecycle management",
+    "Agent-friendly MCP integration",
+    "State persistence"
+  ],
+  "publicApiSurface": [
+    "openenvx proxy run [name] -- [command]",
+    "openenvx proxy stop"
+  ]
+}
