@@ -1,0 +1,146 @@
+---
+title: Installation
+description: Build and install OpenEnvX from source
+---
+
+# Installation
+
+OpenEnvX is currently available to build from source. Binaries for macOS and Linux are built using the included Makefile.
+
+## Prerequisites
+
+Before installing OpenEnvX, ensure you have:
+
+- **Go 1.21 or later** installed on your system
+- **Git** for cloning the repository
+- **Make** for running build commands
+
+## Installation steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the OpenEnvX source code from GitHub:
+    
+    ```bash
+    git clone https://github.com/xmazu/openenvx.git
+    cd openenvx
+    ```
+  </Step>
+  
+  <Step title="Build the binary">
+    Build OpenEnvX for your current platform:
+    
+    ```bash
+    make build
+    ```
+    
+    This creates the `openenvx` binary in the current directory.
+    
+    <Info>
+    The build includes version information from git tags and build timestamp. The binary name is `openenvx`.
+    </Info>
+  </Step>
+  
+  <Step title="Install locally">
+    Install OpenEnvX to your `$GOPATH/bin` so it's available system-wide:
+    
+    ```bash
+    make install
+    ```
+    
+    This runs `go install` with the appropriate build flags.
+    
+    <Note>
+    Make sure `$GOPATH/bin` (usually `~/go/bin`) is in your `$PATH` so you can run `openenvx` from anywhere.
+    </Note>
+  </Step>
+  
+  <Step title="Verify installation">
+    Confirm OpenEnvX is installed correctly:
+    
+    ```bash
+    openenvx --help
+    ```
+    
+    You should see output like:
+    
+    ```
+    OpenEnvX Runtime: local-first control plane for development. 
+    Proxy (*.localhost), services, env; use from the CLI or let 
+    an AI agent drive it via MCP.
+    
+    Usage:
+      openenvx [command]
+    
+    Available Commands:
+      proxy       Local dev proxy with *.localhost URLs
+    ```
+  </Step>
+</Steps>
+
+## Build for multiple platforms
+
+If you need to build OpenEnvX for different operating systems:
+
+<CodeGroup>
+
+```bash macOS
+# Build for both Intel and Apple Silicon
+make build-macos
+
+# Outputs:
+# dist/openenvx-darwin-amd64
+# dist/openenvx-darwin-arm64
+```
+
+```bash Linux
+# Build for both amd64 and arm64
+make build-linux
+
+# Outputs:
+# dist/openenvx-linux-amd64
+# dist/openenvx-linux-arm64
+```
+
+```bash All platforms
+# Build for all supported platforms
+make build-all
+
+# Creates all binaries in the dist/ directory
+```
+
+</CodeGroup>
+
+## Development builds
+
+If you're contributing to OpenEnvX or testing changes:
+
+```bash
+# Run tests
+make test
+
+# Run tests with coverage report
+make test-coverage
+
+# Format code
+make fmt
+
+# Run the full CI pipeline (format, test, build)
+make ci
+```
+
+## Clean up
+
+To remove build artifacts:
+
+```bash
+make clean
+```
+
+This removes the `dist/` directory and the `openenvx` binary from the current directory.
+
+## Next steps
+
+<Card title="Quick start" icon="rocket" href="/quickstart">
+  Now that OpenEnvX is installed, let's run your first app with the proxy
+</Card>

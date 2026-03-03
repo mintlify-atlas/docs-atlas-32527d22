@@ -1,0 +1,450 @@
+---
+title: Agent integration
+description: Learn how to use OpenEnvX with AI agents for automated development workflows
+---
+
+## Overview
+
+OpenEnvX is designed for agentic workflows - where AI agents can start, stop, and manage your development environment. The CLI provides a simple, scriptable interface that agents can drive programmatically.
+
+<Info>
+  OpenEnvX exposes MCP (Model Context Protocol) tools and skills that let agents control the runtime the same way you do from the CLI.
+</Info>
+
+## Why agent integration
+
+Local development environments are complex:
+
+- Multiple services running on different ports
+- Route conflicts and stale processes
+- Environment variable management
+- TLS certificate issues
+
+AI agents can automate these tasks:
+
+```
+User: "Start the API and web frontend"
+
+Agent:
+1. openenvx proxy run api -- npm start
+2. openenvx proxy run web -- npm run dev
+3. Report: API at https://api.localhost:1355
+           Web at https://web.localhost:1355
+```
+
+## CLI patterns for automation
+
+OpenEnvX CLI commands are designed to be machine-readable:
+
+### Starting services
+
+```bash
+# Predictable output format
+openenvx proxy run myapp -- npm start
+# → https://myapp.localhost:1355
+
+# Exit code 0 on success, non-zero on failure
+if openenvx proxy run myapp -- npm start; then
+  echo "Service started"
+fi
+```
+
+### Handling conflicts
+
+```bash
+# Detect conflict via exit code and error message
+openenvx proxy run myapp -- npm start
+# Error: route "myapp" already registered by another process (PID 12345)
+# (use --force to override)
+# Exit code: 1
+
+# Agent can retry with --force
+openenvx proxy run myapp --force -- npm start
+```
+
+### Stopping services
+
+```bash
+# Stop the proxy daemon
+openenvx proxy stop
+# → proxy stopped
+
+# Ctrl+C to stop individual apps
+# (handled by signal forwarding)
+```
+
+## MCP tools integration
+
+OpenEnvX exposes Model Context Protocol (MCP) tools for agent integration:
+
+<CodeGroup>
+```json Available tools
+{
+  "tools": [
+    {
+      "name": "start_service",
+      "description": "Start a service with the proxy",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "command": {"type": "array"},
+          "force": {"type": "boolean"}
+        }
+      }
+    },
+    {
+      "name": "stop_service",
+      "description": "Stop a service by name",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "list_routes",
+      "description": "List all active routes",
+      "inputSchema": {"type": "object"}
+    }
+  ]
+}
+```
+
+```python Agent usage (Python)
+import anthropic
+
+client = anthropic.Anthropic()
+
+response = client.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    tools=[
+        {
+            "name": "start_service",
+            "description": "Start a service with OpenEnvX proxy",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "command": {"type": "array"},
+                    "force": {"type": "boolean"}
+                }
+            }
+        }
+    ],
+    messages=[{"role": "user", "content": "Start the API server"}]
+)
+
+# Agent calls start_service tool
+if response.stop_reason == "tool_use":
+    tool_use = response.content[0]
+    # Execute: openenvx proxy run api -- npm start
+```
+</CodeGroup>
+
+## Agent-friendly workflows
+
+### Starting a development stack
+
+```bash
+# Agent executes multiple commands in parallel
+openenvx proxy run api -- npm run dev:api &
+openenvx proxy run web -- npm run dev:web &
+openenvx proxy run admin -- go run cmd/admin/main.go &
+
+# Wait for all to be ready
+wait
+
+# Report URLs to user
+echo "Services ready:"
+echo "  API: https://api.localhost:1355"
+echo "  Web: https://web.localhost:1355"
+echo "  Admin: https://admin.localhost:1355"
+```
+
+### Handling failures
+
+```bash
+# Retry logic for transient failures
+retries=3
+for i in $(seq 1 $retries); do
+  if openenvx proxy run myapp -- npm start; then
+    break
+  fi
+  echo "Retry $i/$retries..."
+  sleep 2
+done
+```
+
+### Checking route status
+
+```bash
+# Read routes.json programmatically
+cat ~/.config/openenvx/routes.json | jq
+# {
+#   "api": {"port": 54321, "pid": 12345},
+#   "web": {"port": 54322, "pid": 12346}
+# }
+
+# Check if route exists
+if jq -e '.myapp' ~/.config/openenvx/routes.json > /dev/null; then
+  echo "Route 'myapp' is active"
+fi
+```
+
+## State management for agents
+
+Agents can track service state using the routes file:
+
+<Steps>
+  <Step title="Read current state">
+    ```bash
+    cat ~/.config/openenvx/routes.json
+    ```
+  </Step>
+
+  <Step title="Parse JSON">
+    ```python
+    import json
+
+    with open(os.path.expanduser("~/.config/openenvx/routes.json")) as f:
+        routes = json.load(f)
+
+    for name, route in routes.items():
+        print(f"{name}: port {route['port']}, pid {route['pid']}")
+    ```
+  </Step>
+
+  <Step title="Validate processes">
+    ```python
+    import os
+    import signal
+
+    def is_pid_alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    # Check if route process is alive
+    if is_pid_alive(route["pid"]):
+        print(f"{name} is running")
+    ```
+  </Step>
+</Steps>
+
+## Error handling
+
+Agents should handle these common errors:
+
+<Tabs>
+  <Tab title="Route conflict">
+    ```python
+    result = subprocess.run(
+        ["openenvx", "proxy", "run", "myapp", "--", "npm", "start"],
+        capture_output=True,
+        text=True
+    )
+
+    if result.returncode != 0:
+        if "already registered" in result.stderr:
+            # Retry with --force
+            subprocess.run([
+                "openenvx", "proxy", "run", "myapp", "--force",
+                "--", "npm", "start"
+            ])
+    ```
+  </Tab>
+
+  <Tab title="Proxy not running">
+    ```python
+    # Proxy starts automatically on first `proxy run`
+    # No need to explicitly start the daemon
+
+    result = subprocess.run(
+        ["openenvx", "proxy", "run", "myapp", "--", "npm", "start"]
+    )
+    # Proxy is now running
+    ```
+  </Tab>
+
+  <Tab title="Command not found">
+    ```python
+    try:
+        subprocess.run(["openenvx", "--version"], check=True)
+    except FileNotFoundError:
+        print("OpenEnvX not installed")
+        print("Install with: brew install openenvx")
+    ```
+  </Tab>
+</Tabs>
+
+## Process lifecycle management
+
+Agents can manage long-running processes:
+
+```python
+import subprocess
+import signal
+import time
+
+class ServiceManager:
+    def __init__(self):
+        self.processes = {}
+
+    def start(self, name, command):
+        """Start a service with OpenEnvX"""
+        proc = subprocess.Popen(
+            ["openenvx", "proxy", "run", name, "--"] + command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        self.processes[name] = proc
+        return proc
+
+    def stop(self, name):
+        """Stop a service by sending SIGTERM"""
+        if name in self.processes:
+            self.processes[name].send_signal(signal.SIGTERM)
+            self.processes[name].wait(timeout=5)
+            del self.processes[name]
+
+    def stop_all(self):
+        """Stop all managed services"""
+        for name in list(self.processes.keys()):
+            self.stop(name)
+
+# Usage
+manager = ServiceManager()
+manager.start("api", ["npm", "start"])
+manager.start("web", ["npm", "run", "dev"])
+
+# ... do work ...
+
+manager.stop_all()
+```
+
+## Monitoring and logs
+
+Agents can monitor service health:
+
+```python
+import requests
+import time
+
+def wait_for_service(name, timeout=30):
+    """Wait for service to respond to HTTP requests"""
+    url = f"https://{name}.localhost:1355/health"
+    start = time.time()
+
+    while time.time() - start < timeout:
+        try:
+            response = requests.get(url, verify=False)
+            if response.status_code == 200:
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(1)
+
+    return False
+
+# Start service and wait for it to be ready
+start("api", ["npm", "start"])
+if wait_for_service("api"):
+    print("API is ready")
+else:
+    print("API failed to start")
+```
+
+## Future: Cloud provisioning
+
+OpenEnvX is designed to expand beyond local development:
+
+<Info>
+  Future versions will support provisioning cloud resources (databases, storage, etc.) through the same CLI interface, allowing agents to manage both local and cloud resources seamlessly.
+</Info>
+
+```bash
+# Future commands (not yet implemented)
+openenvx cloud create postgres --name mydb
+# → postgresql://user:pass@mydb.cloud.openenvx.dev/mydb
+
+openenvx cloud create redis --name cache
+# → redis://cache.cloud.openenvx.dev:6379
+```
+
+## Best practices for agents
+
+1. **Always check exit codes**: Non-zero = failure
+2. **Parse error messages**: Detect conflicts and retry with `--force`
+3. **Validate routes file**: Ensure processes are alive before assuming service is up
+4. **Handle timeouts**: Services may take time to start
+5. **Clean up on exit**: Stop services when done
+6. **Use structured output**: Parse JSON from `routes.json` rather than CLI output
+
+## Example: Full agent workflow
+
+```python
+import json
+import os
+import subprocess
+import time
+
+class OpenEnvXAgent:
+    def __init__(self):
+        self.routes_path = os.path.expanduser("~/.config/openenvx/routes.json")
+
+    def start_service(self, name, command, force=False):
+        """Start a service with OpenEnvX"""
+        cmd = ["openenvx", "proxy", "run"]
+        if force:
+            cmd.append("--force")
+        cmd.extend([name, "--"] + command)
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            if "already registered" in result.stderr and not force:
+                # Retry with force
+                return self.start_service(name, command, force=True)
+            raise Exception(f"Failed to start {name}: {result.stderr}")
+
+        return f"https://{name}.localhost:1355"
+
+    def list_services(self):
+        """List all running services"""
+        with open(self.routes_path) as f:
+            return json.load(f)
+
+    def stop_service(self, name):
+        """Stop a service (send SIGTERM to PID)"""
+        routes = self.list_services()
+        if name in routes:
+            pid = routes[name]["pid"]
+            os.kill(pid, signal.SIGTERM)
+
+# Usage
+agent = OpenEnvXAgent()
+
+# Start services
+api_url = agent.start_service("api", ["npm", "run", "dev:api"])
+web_url = agent.start_service("web", ["npm", "run", "dev:web"])
+
+print(f"API: {api_url}")
+print(f"Web: {web_url}")
+
+# List running services
+for name, route in agent.list_services().items():
+    print(f"{name}: port {route['port']}")
+
+# Stop services
+agent.stop_service("api")
+agent.stop_service("web")
+```
+
+## Next steps
+
+- Learn how to [run applications](/guides/running-applications)
+- Understand [route management](/guides/managing-routes)
+- Explore [TLS certificates](/guides/tls-certificates) for HTTPS

@@ -1,80 +1,169 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Get your first app running with OpenEnvX in under 5 minutes
 ---
 
-## Get started in three steps
+# Quick start
 
-Get your documentation site running locally and make your first customization.
+This guide will get you from zero to running your first app behind OpenEnvX's local proxy in under 5 minutes.
 
-### Step 1: Set up your local environment
+## What you'll build
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+You'll start a simple web server and access it at `https://myapp.localhost:1355` using OpenEnvX's automatic proxy and TLS.
+
+<Steps>
+  <Step title="Create a simple server">
+    First, let's create a basic Node.js server to proxy. Create a file called `server.js`:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```javascript server.js
+    const http = require('http');
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('Hello from OpenEnvX!\n');
+    });
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    const PORT = process.env.PORT || 3000;
+    server.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+    ```
+    
+    <Info>
+    You can use any web server or framework. OpenEnvX works with Node.js, Python, Go, Ruby, or any HTTP server.
+    </Info>
+  </Step>
+  
+  <Step title="Run with OpenEnvX proxy">
+    Start your server with OpenEnvX using the `proxy run` command:
+    
+    ```bash
+    openenvx proxy run myapp -- node server.js
+    ```
+    
+    This command does several things:
+    - Starts the proxy daemon on port 1355 (if not already running)
+    - Generates TLS certificates for `*.localhost`
+    - Runs your command (`node server.js`)
+    - Registers a route from `myapp.localhost` to your server's port
+    
+    <Note>
+    The `--` separator is required to separate the app name from the command. Everything after `--` is your app's start command.
+    </Note>
+  </Step>
+  
+  <Step title="Access your app">
+    Open your browser and navigate to:
+    
+    ```
+    https://myapp.localhost:1355
+    ```
+    
+    You should see "Hello from OpenEnvX!" in your browser.
+    
+    <Warning>
+    Your browser may show a certificate warning since OpenEnvX uses self-signed certificates. This is expected for local development. Click "Advanced" and "Proceed" to continue.
+    </Warning>
+  </Step>
+  
+  <Step title="Run multiple services">
+    OpenEnvX really shines when running multiple services. Let's add another one.
+    
+    In a new terminal, start a second service:
+    
+    ```bash
+    openenvx proxy run api -- python -m http.server 8000
+    ```
+    
+    Now you have two services running:
+    - `https://myapp.localhost:1355` → your Node.js server
+    - `https://api.localhost:1355` → your Python server
+    
+    Both on the same port (1355), different subdomains!
+  </Step>
+  
+  <Step title="Stop services">
+    When you're done, stop your services:
+    
+    - Press `Ctrl+C` in each terminal running a service to stop it
+    - The route is automatically removed when the process exits
+    
+    To stop the proxy daemon entirely:
+    
+    ```bash
+    openenvx proxy stop
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Understanding the command
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Let's break down what happens when you run:
 
-### Step 3: Go live
+```bash
+ openenvx proxy run myapp -- node server.js
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+1. **`openenvx proxy run`**: Starts the proxy run command
+2. **`myapp`**: The name/subdomain for your app (becomes `myapp.localhost`)
+3. **`--`**: Required separator between name and command
+4. **`node server.js`**: Your application's start command
 
-## Next steps
+## Common patterns
 
-Now that you have your docs running, explore these key features:
+<CodeGroup>
+
+```bash Node.js
+# Run a Next.js dev server
+openenvx proxy run frontend -- npm run dev
+
+# Run a custom Node script
+openenvx proxy run backend -- node src/index.js
+```
+
+```bash Python
+# Run a Flask app
+openenvx proxy run api -- python app.py
+
+# Run a Django dev server
+openenvx proxy run web -- python manage.py runserver
+```
+
+```bash Go
+# Run a Go server
+openenvx proxy run service -- go run main.go
+```
+
+```bash Ruby
+# Run a Rails server
+openenvx proxy run app -- rails server
+```
+
+</CodeGroup>
+
+## Handling port conflicts
+
+If you try to register a route that already exists, you'll get an error:
+
+```bash
+openenvx proxy run myapp -- node server.js
+# Error: route "myapp" already registered (use --force to override)
+```
+
+To override an existing route, use the `--force` flag:
+
+```bash
+openenvx proxy run myapp --force -- node server.js
+```
+
+## What's next?
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="CLI Reference" icon="terminal" href="/cli/overview">
+    Learn all CLI commands and advanced usage
+  </Card>
+  
+  <Card title="Agent integration" icon="robot" href="/guides/agent-integration">
+    Set up MCP tools for AI agent control
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

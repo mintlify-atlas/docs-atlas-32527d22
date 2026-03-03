@@ -1,0 +1,343 @@
+---
+title: State management
+description: How OpenEnvX manages routes, processes, and persistent state
+---
+
+OpenEnvX maintains state about active routes, process IDs, and the proxy daemon in a set of files within the state directory. This page explains how state is structured, persisted, and managed.
+
+## Overview
+
+State management in OpenEnvX handles:
+
+- Route registration (mapping app names to ports and PIDs)
+- PID tracking for the proxy daemon
+- Concurrent access protection via file locks
+- Automatic cleanup of stale routes
+
+## State directory
+
+All state files are stored in `~/.config/openenvx/` (or `$XDG_CONFIG_HOME/openenvx/` if configured).
+
+The state directory is created automatically with `0755` permissions on first use.
+
+Source: `internal/proxy/state.go:46-57`, `internal/proxy/state.go:64`
+
+## routes.json structure
+
+The `routes.json` file stores active route mappings. Each entry maps an application name to its port and process ID.
+
+### Format
+
+```json
+{
+  "myapp": {
+    "port": 3000,
+    "pid": 12345
+  },
+  "api": {
+    "port": 8080,
+    "pid": 12346
+  }
+}
+```
+
+### Route structure
+
+Each route has two fields:
+
+- **port** (`int`): The local port where the application is listening
+- **pid** (`int`): The process ID of the application
+
+Source: `internal/proxy/state.go:35-38`
+
+<Accordion title="Internal representation">
+  In the Go source code, routes are stored as a map:
+  
+  ```go
+  type Route struct {
+      Port int `json:"port"`
+      PID  int `json:"pid"`
+  }
+  
+  type State struct {
+      mu     sync.RWMutex
+      dir    string
+      routes map[string]Route
+  }
+  ```
+  
+  Source: `internal/proxy/state.go:35-44`
+</Accordion>
+
+### File location
+
+The routes file is located at:
+
+```
+~/.config/openenvx/routes.json
+```
+
+Source: `internal/proxy/state.go:109-111`
+
+## Loading and saving routes
+
+### Loading
+
+When the state is loaded, OpenEnvX:
+
+1. Reads `routes.json`
+2. Parses the JSON into the internal route map
+3. **Validates each route** by checking if the PID is still alive
+4. Removes routes for dead processes
+
+This automatic cleanup ensures `routes.json` only contains active routes.
+
+Source: `internal/proxy/state.go:121-139`
+
+<Accordion title="PID liveness check">
+  OpenEnvX checks if a process is alive by sending signal 0:
+  
+  ```go
+  func isPidAlive(pid int) bool {
+      return syscall.Kill(pid, 0) == nil
+  }
+  ```
+  
+  If the process doesn't exist, `syscall.Kill` returns an error, and the route is removed during load.
+  
+  Source: `internal/proxy/state.go:117-119`
+</Accordion>
+
+### Saving
+
+When routes are modified, OpenEnvX:
+
+1. Serializes the route map to JSON with indentation
+2. Writes to a temporary file (`routes.json.tmp`)
+3. Atomically renames the temporary file to `routes.json`
+4. Fixes file ownership if running as root
+
+The atomic rename ensures the file is never partially written or corrupted.
+
+Source: `internal/proxy/state.go:141-156`
+
+<Tip>
+  The JSON is formatted with 2-space indentation for readability. You can manually inspect or edit `routes.json` if needed, but be careful not to corrupt the format.
+</Tip>
+
+## Adding routes
+
+When you run `openenvx proxy run myapp -- command`, the route is added through this process:
+
+1. **Acquire lock** - Ensures exclusive access to `routes.json`
+2. **Reload state** - Loads current routes from disk
+3. **Check for conflicts** - Verifies the name isn't already registered by a living process
+4. **Add route** - Stores the mapping of name → port + PID
+5. **Save to disk** - Persists changes to `routes.json`
+6. **Release lock** - Allows other processes to access state
+
+Source: `internal/proxy/state.go:158-176`
+
+### Route conflicts
+
+If a route name is already registered by a living process, you'll get a conflict error:
+
+```
+route "myapp" already registered by another process (PID 12345)
+```
+
+You can override this with the `--force` flag:
+
+```bash
+openenvx proxy run myapp --force -- npm start
+```
+
+Source: `internal/proxy/state.go:26-33`, `internal/proxy/state.go:169-172`
+
+## Removing routes
+
+Routes are removed when:
+
+- The application process exits normally
+- The user presses Ctrl+C
+- The process is killed
+
+Removal process:
+
+1. **Acquire lock**
+2. **Reload state** from disk
+3. **Delete route** from the map
+4. **Save to disk**
+5. **Release lock**
+
+Source: `internal/proxy/state.go:178-198`
+
+<Note>
+  Routes for dead processes are automatically cleaned up when state is loaded. You don't need to manually remove routes for crashed applications.
+</Note>
+
+## PID file management
+
+The proxy daemon writes its process ID to a PID file for management purposes.
+
+### PID file location
+
+```
+~/.config/openenvx/proxy.pid
+```
+
+Source: `internal/proxy/state.go:113-115`
+
+### Writing PID
+
+When the proxy daemon starts, it writes its PID:
+
+```go
+func (s *State) WriteProxyPID(pid int) error
+```
+
+The PID is stored as a plain text integer.
+
+Source: `internal/proxy/state.go:221-227`
+
+### Reading PID
+
+When running `openenvx proxy stop`, the PID is read to identify which process to kill:
+
+```go
+func (s *State) ReadProxyPID() (int, error)
+```
+
+Source: `internal/proxy/state.go:229-235`
+
+### Cleanup
+
+The PID file is removed when the proxy daemon is stopped gracefully.
+
+Source: `internal/proxy/state.go:237-239`
+
+<Accordion title="Fallback when PID file is missing">
+  If there's no PID file (e.g., the proxy was started in-process by `proxy run`), the stop command falls back to using `lsof` to find the process listening on port 1355:
+  
+  ```bash
+  lsof -ti tcp:1355
+  ```
+  
+  Source: `cmd/proxy.go:53-59`, `internal/proxy/runner.go:73-91`
+</Accordion>
+
+## Lock mechanism for concurrent access
+
+OpenEnvX uses a filesystem-based lock to prevent race conditions when multiple processes modify state simultaneously.
+
+### Lock implementation
+
+The lock is implemented as a directory:
+
+```
+~/.config/openenvx/routes.lock/
+```
+
+Creating a directory is an atomic operation on POSIX systems, making it a reliable lock mechanism.
+
+Source: `internal/proxy/state.go:74-76`
+
+### Acquiring lock
+
+When acquiring the lock:
+
+1. Try to create the lock directory (`mkdir`)
+2. If it already exists, check if it's stale (older than 10 seconds)
+3. If stale, remove it and retry
+4. If not stale, wait 50ms and retry
+5. Retry up to 20 times before giving up
+
+Source: `internal/proxy/state.go:78-103`
+
+<AccordionGroup>
+  <Accordion title="Lock parameters">
+    ```go
+    const (
+        lockStaleDuration = 10 * time.Second
+        lockRetryCount    = 20
+        lockRetryInterval = 50 * time.Millisecond
+    )
+    ```
+    
+    - Maximum wait time: 20 × 50ms = 1 second
+    - Stale locks are automatically cleaned up after 10 seconds
+    
+    Source: `internal/proxy/state.go:19-22`
+  </Accordion>
+  
+  <Accordion title="Lock failure error">
+    If the lock cannot be acquired after all retries:
+    
+    ```go
+    var ErrRouteLockFailed = errors.New("failed to acquire route lock")
+    ```
+    
+    This typically indicates either:
+    - Another process is actively modifying routes
+    - A lock got stuck (should self-heal after 10 seconds)
+    
+    Source: `internal/proxy/state.go:24`
+  </Accordion>
+</AccordionGroup>
+
+### Releasing lock
+
+The lock is always released using `defer` to ensure cleanup even if an error occurs:
+
+```go
+if err := s.acquireLock(); err != nil {
+    return err
+}
+defer s.releaseLock()
+```
+
+Releasing simply removes the lock directory.
+
+Source: `internal/proxy/state.go:105-107`, `internal/proxy/state.go:159-162`
+
+## Route persistence
+
+Routes are persisted to disk on every modification to ensure state survives proxy restarts.
+
+### When routes persist
+
+- **Proxy restart**: Routes survive if processes are still alive
+- **System reboot**: Routes are cleared (processes no longer exist)
+- **Crash**: Stale routes are cleaned up on next load
+
+### Reload operation
+
+The proxy periodically reloads routes from disk to detect external changes:
+
+```go
+func (s *State) Reload() error {
+    return s.load()
+}
+```
+
+This is called on every HTTP request to ensure the proxy has the latest route information.
+
+Source: `internal/proxy/state.go:200-202`, `internal/proxy/proxy.go:115`
+
+<Warning>
+  Don't manually edit `routes.json` while the proxy is running. Changes may be overwritten by concurrent route operations. If you need to manually edit state, stop all applications and the proxy first.
+</Warning>
+
+## State operations summary
+
+| Operation | Lock Required | Reloads State | Persists to Disk |
+|-----------|---------------|---------------|------------------|
+| AddRoute | Yes | Yes | Yes |
+| RemoveRoute | Yes | Yes | Yes |
+| GetRoute | No | No | No |
+| AllRoutes | No | No | No |
+| Reload | No | Yes | No |
+
+Source: `internal/proxy/state.go:158-219`
+
+Read operations don't require locks because they use Go's `sync.RWMutex`, allowing multiple concurrent readers while blocking writers.

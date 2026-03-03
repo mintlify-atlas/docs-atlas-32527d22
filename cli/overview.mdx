@@ -1,0 +1,130 @@
+---
+title: CLI Reference
+description: Complete reference for all OpenEnvX command-line interface commands
+---
+
+OpenEnvX is a local-first development runtime that provides proxy, services, and environment management. The CLI is designed to be both developer-friendly and agent-friendly (via MCP).
+
+## Command Structure
+
+All OpenEnvX commands follow this structure:
+
+```bash
+openenvx [command] [subcommand] [arguments] [flags]
+```
+
+## Available Commands
+
+### proxy
+
+Local development proxy with `*.localhost` URLs. Provides HTTPS access to your local apps without DNS configuration.
+
+```bash
+openenvx proxy [subcommand]
+```
+
+**Subcommands:**
+
+- **[run](/cli/proxy-run)** - Run an application and register it at a custom `*.localhost` URL
+- **[stop](/cli/proxy-stop)** - Stop the proxy daemon
+
+## Global Behavior
+
+### Automatic *.localhost Resolution
+
+All `*.localhost` domains automatically resolve to `127.0.0.1` without any DNS configuration. OpenEnvX leverages this to provide unique URLs for each of your local applications.
+
+### Default Port
+
+The proxy runs on port **1355** by default. All your applications are accessible through this single port with different subdomains:
+
+```
+https://myapp.localhost:1355
+https://api.localhost:1355
+https://frontend.localhost:1355
+```
+
+### TLS/HTTPS Support
+
+OpenEnvX automatically generates and manages TLS certificates for HTTPS access:
+
+- Certificate authority (CA) is created on first run
+- Per-host certificates are generated dynamically
+- Certificates are stored in `~/.config/openenvx/`
+
+### State Management
+
+OpenEnvX stores its state in `~/.config/openenvx/` (or `$XDG_CONFIG_HOME/openenvx/`):
+
+- `routes.json` - Active route registrations
+- `proxy.pid` - Proxy daemon process ID
+- Certificate files for TLS
+
+## Common Workflows
+
+### Running a Development Server
+
+```bash
+# Run a Node.js app
+openenvx proxy run myapp -- npm run dev
+
+# Run a Python app
+openenvx proxy run api -- python app.py
+
+# Run with custom script
+openenvx proxy run frontend -- ./start.sh
+```
+
+### Managing Multiple Apps
+
+Run multiple apps simultaneously, each with its own subdomain:
+
+```bash
+# Terminal 1
+openenvx proxy run backend -- npm start
+
+# Terminal 2
+openenvx proxy run frontend -- npm run dev
+
+# Access:
+# https://backend.localhost:1355
+# https://frontend.localhost:1355
+```
+
+### Stopping Services
+
+```bash
+# Stop a specific app (Ctrl+C in its terminal)
+^C
+
+# Stop the proxy daemon
+openenvx proxy stop
+```
+
+## Exit Codes
+
+OpenEnvX commands follow standard exit code conventions:
+
+- `0` - Success
+- `1` - General error (printed to stderr)
+
+## Getting Help
+
+For detailed information about specific commands:
+
+```bash
+openenvx --help
+openenvx proxy --help
+openenvx proxy run --help
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="proxy run" icon="play" href="/cli/proxy-run">
+    Run apps with custom *.localhost URLs
+  </Card>
+  <Card title="proxy stop" icon="stop" href="/cli/proxy-stop">
+    Stop the proxy daemon
+  </Card>
+</CardGroup>

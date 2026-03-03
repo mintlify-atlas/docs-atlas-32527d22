@@ -1,0 +1,77 @@
+---
+title: Introduction
+description: Local-first runtime for development with proxy, services, and env integration built for agentic workflows
+---
+
+# Introduction to OpenEnvX
+
+OpenEnvX is a local-first runtime for development that provides a powerful proxy server, service management, and environment integration. Built with agentic workflows in mind, it gives you complete control over your local development environment.
+
+## The problem it solves
+
+Modern development often requires running multiple services locally, each needing their own domain and port. Managing these manually is tedious and error-prone:
+
+- Remembering which port each service runs on
+- Manually updating environment variables
+- No easy way to share development URLs
+- Complex local DNS or hosts file configuration
+
+OpenEnvX solves this by providing **automatic `*.localhost` domain routing** with zero DNS configuration. Every service gets its own subdomain at `https://myapp.localhost:1355`, all on the same port, with automatic TLS certificates.
+
+## Built for agents and humans
+
+OpenEnvX is designed as a control plane that works equally well for you or an AI agent:
+
+- Start/stop services from the CLI
+- Add and remove routes dynamically
+- Expose MCP tools and skills for agent integration
+- Agent can manage your entire dev environment
+
+<Note>
+Your machine, your control. Everything runs locally with no external dependencies.
+</Note>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Zero-config proxy" icon="globe">
+    Run apps under `*.localhost` domains with automatic routing. No DNS configuration needed — `*.localhost` resolves to `127.0.0.1` automatically.
+  </Card>
+  
+  <Card title="Automatic TLS" icon="lock">
+    Self-signed certificates generated on-demand for every subdomain. HTTPS works out of the box for local development.
+  </Card>
+  
+  <Card title="Service management" icon="server">
+    Run and manage multiple services with a single command. Each service gets its own subdomain and port forwarding.
+  </Card>
+  
+  <Card title="Agent-friendly" icon="robot">
+    Built as a control plane for agentic workflows. Exposes CLI commands and MCP tools that agents can use to manage your environment.
+  </Card>
+</CardGroup>
+
+## How it works
+
+1. **Start the proxy**: OpenEnvX runs a local proxy server on port 1355
+2. **Register services**: Use `openenvx proxy run` to start your app and register a route
+3. **Access via subdomain**: Your app is now available at `https://myapp.localhost:1355`
+4. **Multiple services**: Run multiple apps, each gets its own subdomain on the same port
+
+The proxy automatically forwards requests from `myapp.localhost` to your app's actual port (like 3000, 8080, etc.).
+
+<Warning>
+OpenEnvX is in early development. Features and APIs will change.
+</Warning>
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Build and install OpenEnvX on your machine
+  </Card>
+  
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Get your first app running in under 5 minutes
+  </Card>
+</CardGroup>

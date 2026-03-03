@@ -1,0 +1,489 @@
+---
+title: Troubleshooting
+description: Common issues, error messages, and solutions for OpenEnvX proxy
+---
+
+This page covers common issues you might encounter when using OpenEnvX and provides solutions based on actual error handling in the source code.
+
+## Port conflicts
+
+### Issue: Port 1355 already in use
+
+The proxy listens on port 1355 by default. If another application is using this port, the proxy will fail to start.
+
+**Error message:**
+```
+failed to start proxy: listen tcp :1355: bind: address already in use
+```
+
+**Solutions:**
+
+<AccordionGroup>
+  <Accordion title="Check what's using port 1355">
+    Use `lsof` to find the process:
+    
+    ```bash
+    lsof -ti tcp:1355
+    ```
+    
+    This returns the PID of the process using the port.
+    
+    Source: `internal/proxy/runner.go:76`
+  </Accordion>
+  
+  <Accordion title="Stop the existing proxy">
+    If it's an existing OpenEnvX proxy:
+    
+    ```bash
+    openenvx proxy stop
+    ```
+    
+    This will:
+    1. Try to read the PID file and kill that process
+    2. Fall back to using `lsof` if no PID file exists
+    3. Send `SIGTERM` to the process and its process group
+    
+    Source: `cmd/proxy.go:46-66`
+  </Accordion>
+  
+  <Accordion title="Manually kill the process">
+    If `proxy stop` doesn't work:
+    
+    ```bash
+    kill $(lsof -ti tcp:1355)
+    ```
+    
+    Or with `sudo` if necessary:
+    
+    ```bash
+    sudo kill -9 $(lsof -ti tcp:1355)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  The proxy assumes port 1355 is available. Currently, there's no way to configure a different port. If you need to use a different port, you'll need to modify the source code.
+</Warning>
+
+### Issue: Application port conflict
+
+When running an app with `openenvx proxy run`, the assigned `PORT` may conflict with another running application.
+
+**Error message:**
+```
+listen tcp :3000: bind: address already in use
+```
+
+**Solution:**
+
+OpenEnvX automatically finds a free port using the OS:
+
+```go
+func FindFreePort() (int, error) {
+    listener, err := net.Listen("tcp", "127.0.0.1:0")
+    if err != nil {
+        return 0, err
+    }
+    port := listener.Addr().(*net.TCPAddr).Port
+    _ = listener.Close()
+    return port, nil
+}
+```
+
+Source: `internal/proxy/runner.go:13-21`
+
+If you still get port conflicts:
+
+1. **Check your app's code** - Make sure it reads the `PORT` environment variable instead of hardcoding a port
+2. **Check for port binding race conditions** - If your app takes time to start, another process might grab the port
+
+<Tip>
+  Always use the `PORT` environment variable in your application:
+  
+  ```javascript
+  const port = process.env.PORT || 3000;
+  app.listen(port);
+  ```
+</Tip>
+
+## Certificate trust issues
+
+### Issue: Certificate not trusted
+
+Your browser shows a certificate warning when accessing `https://*.localhost:1355`.
+
+**Error message in browser:**
+```
+Your connection is not private
+NET::ERR_CERT_AUTHORITY_INVALID
+```
+
+**Solutions:**
+
+<AccordionGroup>
+  <Accordion title="Trust the CA certificate (macOS)">
+    OpenEnvX automatically attempts to add the CA to your keychain. If it failed or you skipped it:
+    
+    ```bash
+    security add-trusted-cert -r trustRoot \
+      -k ~/Library/Keychains/login.keychain-db \
+      ~/.config/openenvx/ca.pem
+    ```
+    
+    You may be prompted for your password.
+    
+    Source: `internal/proxy/certs.go:246-258`
+  </Accordion>
+  
+  <Accordion title="Trust the CA certificate (Linux)">
+    Copy the CA certificate to the system trust store:
+    
+    ```bash
+    sudo cp ~/.config/openenvx/ca.pem /usr/local/share/ca-certificates/openenvx-ca.crt
+    sudo update-ca-certificates
+    ```
+    
+    Restart your browser after updating certificates.
+    
+    Source: `internal/proxy/certs.go:259-273`
+  </Accordion>
+  
+  <Accordion title="Check if CA is already trusted">
+    OpenEnvX creates a marker file after successfully trusting the CA:
+    
+    ```bash
+    ls ~/.config/openenvx/ca-trusted
+    ```
+    
+    If this file exists but you still see certificate errors, the trust operation may have failed silently.
+    
+    Source: `internal/proxy/certs.go:229-238`
+  </Accordion>
+  
+  <Accordion title="Regenerate certificates">
+    If certificates are corrupted or expired:
+    
+    ```bash
+    # Stop the proxy
+    openenvx proxy stop
+    
+    # Remove old certificates
+    rm -rf ~/.config/openenvx/*.pem ~/.config/openenvx/ca-trusted ~/.config/openenvx/host-certs/
+    
+    # Start the proxy (regenerates certificates)
+    openenvx proxy run myapp -- npm start
+    ```
+    
+    You'll need to trust the new CA certificate.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  Certificates are automatically regenerated when they have less than 24 hours remaining before expiration. CA certificates are valid for 10 years, and server/host certificates are valid for 1 year.
+  
+  Source: `internal/proxy/certs.go:22-24`, `internal/proxy/certs.go:52`, `internal/proxy/certs.go:180`
+</Note>
+
+### Issue: CA trust requires sudo
+
+**Error message:**
+```
+copy CA to /usr/local/share/ca-certificates/openenvx-ca.crt (run with sudo): permission denied
+```
+
+**Solution:**
+
+On Linux, trusting the CA requires root privileges. Run the proxy once with `sudo`:
+
+```bash
+sudo openenvx proxy run myapp -- npm start
+```
+
+After the CA is trusted, you can run subsequent commands without `sudo`.
+
+Source: `internal/proxy/certs.go:260-267`
+
+<Warning>
+  When running with `sudo`, files are created as root but automatically chowned to your user based on `SUDO_UID` and `SUDO_GID`. However, you should only use `sudo` when necessary for certificate trust.
+  
+  Source: `internal/proxy/utils.go:9-37`
+</Warning>
+
+## Route conflicts and resolution
+
+### Issue: Route already registered
+
+You try to run an app with a name that's already registered by another running process.
+
+**Error message:**
+```
+route "myapp" already registered by another process (PID 12345) (use --force to override)
+```
+
+Source: `internal/proxy/state.go:31-33`, `cmd/proxy.go:130-133`
+
+**Solutions:**
+
+<AccordionGroup>
+  <Accordion title="Check if process is still running">
+    Check if the PID is still alive:
+    
+    ```bash
+    ps -p 12345
+    ```
+    
+    If the process is dead, the route will be automatically cleaned up next time state is loaded.
+  </Accordion>
+  
+  <Accordion title="Use --force flag">
+    Override the existing route:
+    
+    ```bash
+    openenvx proxy run myapp --force -- npm start
+    ```
+    
+    This will:
+    1. Kill the existing process
+    2. Remove the old route
+    3. Register the new process
+    
+    Source: `cmd/proxy.go:72-73`, `internal/proxy/state.go:169`
+  </Accordion>
+  
+  <Accordion title="Use a different name">
+    Run your app with a different route name:
+    
+    ```bash
+    openenvx proxy run myapp-dev -- npm start
+    ```
+    
+    Access it at `https://myapp-dev.localhost:1355`
+  </Accordion>
+  
+  <Accordion title="Manually clean up routes">
+    If routes are stuck (process is dead but route persists):
+    
+    ```bash
+    # Stop all apps and proxy
+    openenvx proxy stop
+    
+    # Remove stale routes
+    rm ~/.config/openenvx/routes.json
+    
+    # Start fresh
+    openenvx proxy run myapp -- npm start
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  Routes for dead processes are automatically removed when state is loaded. If you kill a process directly (not through Ctrl+C), just wait a few seconds and the route will be cleaned up on the next proxy operation.
+  
+  Source: `internal/proxy/state.go:133-137`
+</Tip>
+
+### Issue: Route not found
+
+You access an app in the browser but get a 404 error.
+
+**Error message in browser:**
+```
+no route for myapp
+```
+
+Source: `internal/proxy/proxy.go:117-120`
+
+**Solutions:**
+
+1. **Check if the app is running:**
+   ```bash
+   cat ~/.config/openenvx/routes.json
+   ```
+   
+2. **Verify the route name matches:**
+   If you ran `openenvx proxy run api -- npm start`, access it at `https://api.localhost:1355`, not `https://myapp.localhost:1355`
+
+3. **Check if the process died:**
+   Routes are removed when processes exit. Check if your app is still running.
+
+## Process cleanup
+
+### Issue: Orphaned processes after crash
+
+If the proxy crashes or is killed with `kill -9`, child processes may not be cleaned up properly.
+
+**Solutions:**
+
+<AccordionGroup>
+  <Accordion title="Check for orphaned processes">
+    ```bash
+    cat ~/.config/openenvx/routes.json
+    ```
+    
+    Then check if each PID is still running:
+    
+    ```bash
+    ps -p <PID>
+    ```
+  </Accordion>
+  
+  <Accordion title="Clean up manually">
+    Kill orphaned processes:
+    
+    ```bash
+    kill <PID>
+    ```
+    
+    Or kill by process group:
+    
+    ```bash
+    kill -- -$(ps -o pgid= -p <PID> | tr -d ' ')
+    ```
+  </Accordion>
+  
+  <Accordion title="Automatic cleanup">
+    Stale routes are automatically removed when state is loaded:
+    
+    ```bash
+    openenvx proxy run newapp -- npm start
+    ```
+    
+    This loads state, checks PID liveness, and removes dead routes.
+    
+    Source: `internal/proxy/state.go:133-137`
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  OpenEnvX uses process groups to ensure child processes are cleaned up properly. When a process is killed, the entire process group receives `SIGTERM`.
+  
+  Source: `internal/proxy/runner.go:37`, `internal/proxy/runner.go:65-71`
+</Note>
+
+### Issue: Lock file stuck
+
+A stale lock directory prevents route operations.
+
+**Error message:**
+```
+failed to acquire route lock
+```
+
+Source: `internal/proxy/state.go:24`, `internal/proxy/state.go:102`
+
+**Solution:**
+
+Locks automatically expire after 10 seconds. If you see this error:
+
+1. **Wait 10 seconds** and retry
+2. **Manually remove the lock:**
+   ```bash
+   rm -rf ~/.config/openenvx/routes.lock
+   ```
+
+Source: `internal/proxy/state.go:96-98`
+
+<Tip>
+  Lock stale duration is 10 seconds, and operations retry 20 times with 50ms intervals. This means operations wait up to 1 second before giving up. If you see lock errors frequently, it may indicate very slow disk I/O.
+  
+  Source: `internal/proxy/state.go:19-22`
+</Tip>
+
+## Host format issues
+
+### Issue: Expected Host like myapp.localhost
+
+You accessed the proxy without the `.localhost` suffix.
+
+**Error message:**
+```
+expected Host like myapp.localhost
+```
+
+Source: `internal/proxy/proxy.go:111-113`
+
+**Solution:**
+
+Always use the format `<name>.localhost:1355`. For example:
+
+- ✅ `https://myapp.localhost:1355`
+- ✅ `https://api.localhost:1355`
+- ❌ `https://localhost:1355/myapp`
+- ❌ `https://myapp:1355`
+
+The proxy uses the hostname to determine which route to proxy to.
+
+## Command parsing issues
+
+### Issue: Missing -- separator
+
+You forgot to use `--` to separate the app name from the command.
+
+**Error message:**
+```
+-- required to separate name from command (use: openenvx proxy run myapp -- npm run start)
+```
+
+Source: `cmd/proxy.go:86`
+
+**Solution:**
+
+Always use `--` between the route name and the command:
+
+```bash
+openenvx proxy run myapp -- npm start
+```
+
+Not:
+
+```bash
+openenvx proxy run myapp npm start  # Wrong!
+```
+
+### Issue: Missing command after --
+
+**Error message:**
+```
+command required after -- (use: openenvx proxy run myapp -- npm run start)
+```
+
+Source: `cmd/proxy.go:99-101`
+
+**Solution:**
+
+Provide a command after `--`:
+
+```bash
+openenvx proxy run myapp -- npm start
+```
+
+## Getting help
+
+If you encounter issues not covered here:
+
+1. **Check the state directory:**
+   ```bash
+   ls -la ~/.config/openenvx/
+   ```
+
+2. **Inspect routes:**
+   ```bash
+   cat ~/.config/openenvx/routes.json
+   ```
+
+3. **Check proxy PID:**
+   ```bash
+   cat ~/.config/openenvx/proxy.pid
+   ps -p $(cat ~/.config/openenvx/proxy.pid)
+   ```
+
+4. **Clean slate:**
+   ```bash
+   openenvx proxy stop
+   rm -rf ~/.config/openenvx/
+   openenvx proxy run myapp -- npm start
+   ```
+
+<Warning>
+  Removing `~/.config/openenvx/` will delete all certificates and routes. You'll need to trust the CA again after regeneration.
+</Warning>

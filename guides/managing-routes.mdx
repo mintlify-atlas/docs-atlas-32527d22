@@ -1,0 +1,249 @@
+---
+title: Managing routes
+description: Understand how OpenEnvX routes work, including registration, conflicts, and the *.localhost pattern
+---
+
+## Overview
+
+OpenEnvX uses a route-based system to map `*.localhost` subdomains to local application ports. Routes are stored in `~/.config/openenvx/routes.json` and managed automatically by the CLI.
+
+## Route pattern
+
+All routes follow the `*.localhost` pattern:
+
+```
+https://myapp.localhost:1355 → http://127.0.0.1:54321
+https://api.localhost:1355   → http://127.0.0.1:54322
+https://web.localhost:1355   → http://127.0.0.1:54323
+```
+
+<Info>
+  `*.localhost` resolves to `127.0.0.1` automatically in all modern browsers and operating systems. No `/etc/hosts` or DNS configuration required.
+</Info>
+
+## Route registration
+
+Routes are registered when you run `openenvx proxy run`:
+
+```bash
+openenvx proxy run myapp -- npm start
+# → Route registered: myapp → port 54321 (PID 12345)
+```
+
+The route table stores:
+- **Name**: The subdomain (e.g., `myapp`)
+- **Port**: The local port your application listens on
+- **PID**: The process ID of your application
+
+## Route state
+
+Route state is persisted in `~/.config/openenvx/routes.json`:
+
+```json
+{
+  "myapp": {
+    "port": 54321,
+    "pid": 12345
+  },
+  "api": {
+    "port": 54322,
+    "pid": 12346
+  }
+}
+```
+
+<Warning>
+  Do not manually edit `routes.json`. The file uses file locking to prevent race conditions between multiple `proxy run` commands.
+</Warning>
+
+## Route removal
+
+Routes are automatically removed when:
+
+1. **Your application exits** normally
+2. **You press Ctrl+C** to stop the application
+3. **The process dies** (crash or kill signal)
+
+```bash
+openenvx proxy run myapp -- npm start
+# ... press Ctrl+C
+# → Route removed: myapp
+```
+
+## Route conflicts
+
+If a route name is already in use, you'll see an error:
+
+```bash
+openenvx proxy run myapp -- npm start
+# Error: route "myapp" already registered by another process (PID 12345)
+# (use --force to override)
+```
+
+OpenEnvX checks if the existing process is alive before rejecting the route:
+
+- If the PID is **alive**, the route is protected
+- If the PID is **dead**, the stale route is automatically cleaned up
+
+## Force override
+
+Use `--force` to override an existing route:
+
+```bash
+openenvx proxy run myapp --force -- npm start
+```
+
+This will:
+1. Remove the existing route (even if the process is still alive)
+2. Register the new route
+3. The old process continues running but is no longer routed
+
+<Warning>
+  Using `--force` doesn't kill the existing process - it only removes the route. You may end up with multiple processes running but only one accessible through the proxy.
+</Warning>
+
+## Syntax rules
+
+The `--force` flag must come before the `--` separator:
+
+<CodeGroup>
+```bash Correct
+openenvx proxy run myapp --force -- npm start
+openenvx proxy run --force myapp -- npm start
+```
+
+```bash Incorrect
+openenvx proxy run myapp -- --force npm start
+# --force is passed to npm, not to openenvx
+```
+</CodeGroup>
+
+## Route locking
+
+OpenEnvX uses file-based locking to prevent race conditions:
+
+- Lock file: `~/.config/openenvx/routes.lock`
+- Lock timeout: 10 seconds
+- Stale locks (older than 10 seconds) are automatically removed
+
+If you see "failed to acquire route lock", another `proxy run` command is currently modifying the route table. Wait a moment and try again.
+
+## How route lookup works
+
+When a request arrives at the proxy:
+
+<Steps>
+  <Step title="Extract the subdomain">
+    ```
+    Request: https://myapp.localhost:1355/api/users
+    Host header: myapp.localhost:1355
+    Subdomain: myapp (strip .localhost)
+    ```
+  </Step>
+
+  <Step title="Reload route table">
+    The proxy reloads `routes.json` on every request to pick up changes from other `proxy run` commands.
+  </Step>
+
+  <Step title="Look up the route">
+    ```go
+    route, ok := state.GetRoute("myapp")
+    if !ok {
+      return 404 // no route for myapp
+    }
+    ```
+  </Step>
+
+  <Step title="Proxy to the backend">
+    ```
+    Backend: http://127.0.0.1:54321/api/users
+    ```
+
+    The proxy forwards the request to your application's port.
+  </Step>
+</Steps>
+
+## Process lifecycle
+
+Routes are tied to process lifecycle:
+
+```bash
+# Start app (route created)
+openenvx proxy run myapp -- npm start
+# PID 12345 registered
+
+# Stop app (route removed)
+# Press Ctrl+C
+# Signal sent to PID 12345 and its process group
+# Route removed from routes.json
+```
+
+The process group termination ensures child processes are cleaned up:
+
+```go
+// From runner.go
+func KillProcess(pid int) error {
+  pgid, err := syscall.Getpgid(pid)
+  if err != nil {
+    return syscall.Kill(pid, syscall.SIGTERM)
+  }
+  // Kill entire process group (negative PID)
+  return syscall.Kill(-pgid, syscall.SIGTERM)
+}
+```
+
+## Dead process cleanup
+
+When loading routes, OpenEnvX filters out dead processes:
+
+```go
+// From state.go
+for name, r := range raw {
+  if r.PID > 0 && isPidAlive(r.PID) {
+    s.routes[name] = r
+  }
+  // Dead processes are silently dropped
+}
+```
+
+This ensures stale routes don't accumulate if processes crash.
+
+## Route inspection
+
+To see active routes, check the routes file:
+
+```bash
+cat ~/.config/openenvx/routes.json
+```
+
+Each route shows:
+- The port your application is listening on
+- The PID of the running process
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Route not found (404)">
+    - Verify your application is running
+    - Check that `routes.json` contains your route
+    - Ensure the PID in `routes.json` matches a running process
+  </Accordion>
+
+  <Accordion title="Route conflict error">
+    - Another process is using the same name
+    - Use `--force` to override (see warning above)
+    - Choose a different name: `openenvx proxy run myapp2 -- npm start`
+  </Accordion>
+
+  <Accordion title="Failed to acquire route lock">
+    - Another `proxy run` is currently updating routes
+    - Wait a few seconds and try again
+    - If persistent, remove `~/.config/openenvx/routes.lock` manually
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+- Learn how to [run applications](/guides/running-applications) with the proxy
+- Understand [TLS certificates](/guides/tls-certificates) for HTTPS
+- Explore [agent integration](/guides/agent-integration) for automation

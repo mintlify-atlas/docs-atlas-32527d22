@@ -1,0 +1,184 @@
+---
+title: Configuration
+description: Configure OpenEnvX proxy settings, state directory, and environment variables
+---
+
+OpenEnvX stores its configuration and state in a dedicated directory on your system. This page explains where files are stored, what configuration options are available, and how to customize the proxy behavior.
+
+## State directory location
+
+By default, OpenEnvX stores all its state files in:
+
+```
+~/.config/openenvx/
+```
+
+The state directory location follows the XDG Base Directory specification. You can customize it using the `XDG_CONFIG_HOME` environment variable:
+
+```bash
+export XDG_CONFIG_HOME=~/my-config
+# State will be stored in ~/my-config/openenvx/
+```
+
+Source: `internal/proxy/state.go:46-57`
+
+## Directory structure
+
+The state directory contains the following files:
+
+```
+~/.config/openenvx/
+├── routes.json          # Active route mappings
+├── routes.lock/         # Lock directory for concurrent access
+├── proxy.pid            # Proxy daemon process ID
+├── ca.pem              # Certificate authority certificate
+├── ca-key.pem          # CA private key
+├── server.pem          # Server certificate
+├── server-key.pem      # Server private key
+├── ca-trusted          # Marker file indicating CA is trusted
+└── host-certs/         # Per-host certificates
+    ├── myapp_localhost.pem
+    └── myapp_localhost-key.pem
+```
+
+### File permissions
+
+Files are created with appropriate permissions:
+- Certificate files (`.pem`): `0644` (readable by all)
+- Private keys (`*-key.pem`): `0600` (readable only by owner)
+- State directory: `0755`
+- Lock directory: `0700`
+
+Source: `internal/proxy/state.go:64`, `internal/proxy/certs.go:143-146`
+
+## Default port
+
+The proxy listens on port **1355** by default. This port is hardcoded in the source code:
+
+```go
+const DefaultPort = 1355
+```
+
+Source: `internal/proxy/state.go:16`
+
+<Note>
+  The `*.localhost` domain automatically resolves to `127.0.0.1`, so no DNS configuration is required. All your apps are accessible at `https://<name>.localhost:1355`.
+</Note>
+
+## Environment variables
+
+### XDG_CONFIG_HOME
+
+Overrides the default configuration directory location:
+
+```bash
+export XDG_CONFIG_HOME=~/custom-config
+openenvx proxy run myapp -- npm start
+# State stored in ~/custom-config/openenvx/
+```
+
+If not set, defaults to `~/.config/`.
+
+Source: `internal/proxy/state.go:48-54`
+
+### PORT and HOST
+
+When you run a command with `openenvx proxy run`, these environment variables are automatically set for your application:
+
+```bash
+PORT=<dynamic>    # Automatically assigned free port
+HOST=0.0.0.0      # Listen on all interfaces
+```
+
+Your application should read the `PORT` environment variable to know which port to bind to. The proxy will route requests from `https://<name>.localhost:1355` to your app on this port.
+
+Source: `internal/proxy/runner.go:30`
+
+### SUDO_UID and SUDO_GID
+
+When running with `sudo` (required for certificate trust on some systems), OpenEnvX automatically fixes file ownership:
+
+```bash
+sudo openenvx proxy run myapp -- npm start
+```
+
+Files created as root will be chowned to the original user based on `SUDO_UID` and `SUDO_GID` environment variables.
+
+Source: `internal/proxy/utils.go:9-37`
+
+## Certificate configuration
+
+### Certificate validity
+
+Certificates are automatically generated with the following validity periods:
+
+- **CA certificate**: 10 years
+- **Server/host certificates**: 365 days (1 year)
+
+Certificates are automatically regenerated when they have less than 24 hours remaining before expiration.
+
+Source: `internal/proxy/certs.go:22-24`, `internal/proxy/certs.go:52`, `internal/proxy/certs.go:180`
+
+### Certificate trust
+
+The proxy automatically attempts to trust its CA certificate in your system's trust store:
+
+<AccordionGroup>
+  <Accordion title="macOS">
+    OpenEnvX adds the CA to your login keychain using:
+    
+    ```bash
+    security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db ca.pem
+    ```
+    
+    You may be prompted for your password to authorize the trust.
+    
+    Source: `internal/proxy/certs.go:246-258`
+  </Accordion>
+  
+  <Accordion title="Linux">
+    OpenEnvX copies the CA certificate to the system trust store:
+    
+    ```bash
+    sudo cp ca.pem /usr/local/share/ca-certificates/openenvx-ca.crt
+    sudo update-ca-certificates
+    ```
+    
+    Requires `sudo` privileges.
+    
+    Source: `internal/proxy/certs.go:259-273`
+  </Accordion>
+</AccordionGroup>
+
+A marker file (`ca-trusted`) is created after successful trust to avoid redundant trust operations.
+
+Source: `internal/proxy/certs.go:229-238`
+
+<Warning>
+  If you regenerate your CA (by deleting the CA files), you'll need to manually remove the old CA from your system's trust store and let OpenEnvX trust the new one.
+</Warning>
+
+## Lock mechanism
+
+To prevent race conditions when multiple processes access the state simultaneously, OpenEnvX uses a filesystem-based lock:
+
+- **Lock directory**: `~/.config/openenvx/routes.lock`
+- **Retry count**: 20 attempts
+- **Retry interval**: 50 milliseconds
+- **Stale duration**: 10 seconds
+
+If a lock is older than 10 seconds, it's considered stale and automatically removed.
+
+Source: `internal/proxy/state.go:19-22`, `internal/proxy/state.go:78-103`
+
+## Process management
+
+When running applications with `openenvx proxy run`, processes are managed in process groups to ensure clean shutdown:
+
+```go
+cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+```
+
+When stopping, the entire process group receives `SIGTERM`, ensuring child processes are also terminated.
+
+Source: `internal/proxy/runner.go:37`, `internal/proxy/runner.go:65-71`

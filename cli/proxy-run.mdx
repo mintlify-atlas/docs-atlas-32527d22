@@ -1,0 +1,296 @@
+---
+title: openenvx proxy run
+description: Run an application and register it at a custom *.localhost URL
+---
+
+## Synopsis
+
+```bash
+openenvx proxy run [name] [--force] -- [command]
+```
+
+Run a command and register it at `https://<name>.localhost:1355`. Each application gets the same port (1355) but a different subdomain. The first run automatically starts the proxy daemon.
+
+## Arguments
+
+<ParamField path="name" type="string" required>
+  The subdomain name for your application. This will be accessible at `https://<name>.localhost:1355`.
+  
+  **Rules:**
+  - Must be provided before the `--` separator
+  - Can contain letters, numbers, and hyphens
+  - Should be unique per application
+</ParamField>
+
+<ParamField path="command" type="string[]" required>
+  The command to execute. Must be provided after the `--` separator.
+  
+  **Examples:**
+  - `npm run dev`
+  - `python app.py`
+  - `./start.sh`
+  - `go run main.go`
+</ParamField>
+
+## Flags
+
+<ParamField path="--force" type="boolean" default="false">
+  Override an existing route registration for the same name.
+  
+  Use this when a route is already registered (e.g., from a crashed process) and you want to forcefully replace it.
+  
+  **Position:** Can be placed before or after the name, but must be before `--`
+  
+  ```bash
+  openenvx proxy run myapp --force -- npm start
+  openenvx proxy run --force myapp -- npm start
+  ```
+</ParamField>
+
+## The `--` Separator
+
+<Note>
+The `--` separator is **required** to separate the application name and flags from the command to execute.
+</Note>
+
+This prevents ambiguity between OpenEnvX flags and your command's arguments:
+
+```bash
+# ✅ Correct - command args are passed to npm
+openenvx proxy run myapp -- npm start --port 3000
+
+# ❌ Wrong - would try to parse --port as OpenEnvX flag
+openenvx proxy run myapp npm start --port 3000
+```
+
+## Environment Variables
+
+OpenEnvX automatically injects these environment variables into your application:
+
+<ResponseField name="PORT" type="integer" required>
+  A dynamically allocated free port where your application should listen.
+  
+  OpenEnvX finds an available port and passes it to your app. Your application should bind to this port.
+  
+  **Example:** `5432`, `8080`, `3001`
+</ResponseField>
+
+<ResponseField name="HOST" type="string" required>
+  The host address your application should bind to.
+  
+  **Value:** Always set to `0.0.0.0`
+  
+  This ensures your app accepts connections from the proxy.
+</ResponseField>
+
+### Using Environment Variables
+
+Most frameworks automatically read `PORT` and `HOST`:
+
+```javascript
+// Node.js/Express - automatically uses process.env.PORT
+const port = process.env.PORT || 3000;
+app.listen(port, process.env.HOST || '0.0.0.0');
+```
+
+```python
+# Python/Flask
+import os
+port = int(os.getenv('PORT', 5000))
+app.run(host=os.getenv('HOST', '0.0.0.0'), port=port)
+```
+
+```go
+// Go
+port := os.Getenv("PORT")
+if port == "" {
+    port = "8080"
+}
+http.ListenAndServe(":" + port, handler)
+```
+
+## How It Works
+
+1. **Parse Command** - Extracts name, flags, and command from arguments
+2. **Start Proxy** - If not running, starts the proxy daemon on port 1355
+3. **Find Free Port** - Allocates a random available port for your app
+4. **Register Route** - Maps `<name>.localhost` → `127.0.0.1:<port>`
+5. **Execute Command** - Runs your command with `PORT` and `HOST` environment variables
+6. **Print URL** - Displays the access URL: `→ https://<name>.localhost:1355`
+7. **Monitor Process** - Keeps your app running and handles signals
+8. **Cleanup** - On exit (Ctrl+C or process end), removes the route registration
+
+## Examples
+
+### Basic Usage
+
+```bash
+# Run a Node.js development server
+openenvx proxy run myapp -- npm run dev
+
+# Output:
+# → https://myapp.localhost:1355
+```
+
+### Multiple Applications
+
+Run different apps simultaneously:
+
+```bash
+# Terminal 1 - Backend API
+openenvx proxy run api -- python manage.py runserver $PORT
+
+# Terminal 2 - Frontend
+openenvx proxy run frontend -- npm start
+
+# Terminal 3 - Admin panel
+openenvx proxy run admin -- npm run dev
+```
+
+Access each at:
+- `https://api.localhost:1355`
+- `https://frontend.localhost:1355`
+- `https://admin.localhost:1355`
+
+### With Force Flag
+
+```bash
+# Override an existing registration
+openenvx proxy run myapp --force -- npm start
+```
+
+### Complex Commands
+
+```bash
+# With command arguments
+openenvx proxy run api -- python app.py --debug --log-level info
+
+# With shell script
+openenvx proxy run frontend -- ./scripts/dev.sh
+
+# With environment variables in command
+openenvx proxy run app -- env NODE_ENV=development npm start
+```
+
+## Error Messages
+
+### Missing `--` Separator
+
+```
+-- required to separate name from command (use: openenvx proxy run myapp -- npm run start)
+```
+
+**Solution:** Add `--` between the app name and command:
+
+```bash
+openenvx proxy run myapp -- npm run start
+```
+
+### Missing Name
+
+```
+name required before -- (use: openenvx proxy run myapp -- npm run start)
+```
+
+**Solution:** Provide an application name before `--`:
+
+```bash
+openenvx proxy run myapp -- npm start
+```
+
+### Missing Command
+
+```
+command required after -- (use: openenvx proxy run myapp -- npm run start)
+```
+
+**Solution:** Provide a command after `--`:
+
+```bash
+openenvx proxy run myapp -- npm start
+```
+
+### Route Conflict
+
+```
+route "myapp" already registered by another process (PID 12345) (use --force to override)
+```
+
+**Solution:** Either:
+1. Stop the existing process and try again
+2. Use `--force` to override:
+
+```bash
+openenvx proxy run myapp --force -- npm start
+```
+
+### Proxy Failed to Start
+
+```
+proxy: failed to start
+```
+
+**Possible causes:**
+- Port 1355 is in use by another application
+- Permission issues
+- Certificate generation failed
+
+**Solution:** Check if port 1355 is available:
+
+```bash
+lsof -i :1355
+```
+
+## Process Management
+
+### Graceful Shutdown
+
+When you press Ctrl+C:
+
+1. Signal is caught by OpenEnvX
+2. Your application receives SIGTERM
+3. Process group is terminated (including child processes)
+4. Route registration is removed
+5. Outputs: `gracefully shutting down`
+
+### Cleanup
+
+OpenEnvX automatically cleans up:
+- Removes route from `~/.config/openenvx/routes.json`
+- Terminates the entire process group
+- Handles zombie processes
+
+<Note>
+The proxy daemon continues running after your app exits. This allows other apps to keep using their routes. Use `openenvx proxy stop` to stop the proxy.
+</Note>
+
+## Technical Details
+
+### Port Allocation
+
+- OpenEnvX finds a free port using the OS (creates temporary listener on `127.0.0.1:0`)
+- Port is random and changes each time you run the command
+- Your app must read the `PORT` environment variable
+
+### Process Group
+
+Your command runs in its own process group (`Setpgid: true`). This ensures:
+- All child processes are terminated together
+- Clean shutdown of complex process trees
+- No orphaned processes
+
+### Standard I/O
+
+Your application's stdin, stdout, and stderr are connected directly to your terminal:
+- See real-time logs
+- Interactive commands work (e.g., debuggers)
+- Ctrl+C is handled properly
+
+### Working Directory
+
+The command executes in your current working directory, maintaining your context.
+
+## See Also
+
+- [proxy stop](/cli/proxy-stop) - Stop the proxy daemon
+- [CLI Overview](/cli/overview) - Complete CLI reference

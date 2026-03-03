@@ -1,0 +1,203 @@
+---
+title: Running applications
+description: Learn how to run applications with the OpenEnvX proxy and access them via *.localhost URLs
+---
+
+## Overview
+
+The `openenvx proxy run` command starts your application and registers it with the proxy, making it accessible at `https://<name>.localhost:1355`. The proxy automatically:
+
+- Finds a free port for your application
+- Sets `PORT` and `HOST` environment variables
+- Registers the route in the proxy state
+- Cleans up the route when your application stops
+
+## Basic usage
+
+<Steps>
+  <Step title="Run your application">
+    Use the `--` separator to distinguish the app name from the command:
+
+    ```bash
+    openenvx proxy run myapp -- npm start
+    ```
+
+    Your app will be available at `https://myapp.localhost:1355`
+  </Step>
+
+  <Step title="Access your application">
+    The proxy automatically starts if it's not running. Open your browser:
+
+    ```
+    https://myapp.localhost:1355
+    ```
+
+    No DNS configuration needed - `*.localhost` resolves to `127.0.0.1` automatically.
+  </Step>
+
+  <Step title="Stop your application">
+    Press `Ctrl+C` to stop. The route is automatically removed from the proxy.
+  </Step>
+</Steps>
+
+## Environment variables
+
+OpenEnvX injects two environment variables into your application process:
+
+<CodeGroup>
+```javascript Node.js
+// Your app receives PORT and HOST automatically
+const port = process.env.PORT;  // e.g., "54321"
+const host = process.env.HOST;  // "0.0.0.0"
+
+app.listen(port, host, () => {
+  console.log(`Server running on ${host}:${port}`);
+});
+```
+
+```go Go
+// Read PORT and HOST from environment
+port := os.Getenv("PORT")      // e.g., "54321"
+host := os.Getenv("HOST")      // "0.0.0.0"
+
+addr := fmt.Sprintf("%s:%s", host, port)
+http.ListenAndServe(addr, handler)
+```
+
+```python Python
+import os
+
+# Environment variables are automatically set
+port = int(os.environ.get("PORT", 8000))
+host = os.environ.get("HOST", "0.0.0.0")
+
+app.run(host=host, port=port)
+```
+</CodeGroup>
+
+<Info>
+  The proxy finds a free port using the system's TCP stack and sets `PORT` to that value. Your application must listen on `PORT` for the proxy to route traffic correctly.
+</Info>
+
+## Running different application types
+
+<Tabs>
+  <Tab title="Node.js">
+    ```bash
+    # Development server
+    openenvx proxy run myapp -- npm run dev
+
+    # Next.js
+    openenvx proxy run nextapp -- npm run dev
+
+    # Custom script
+    openenvx proxy run api -- node server.js
+    ```
+  </Tab>
+
+  <Tab title="Go">
+    ```bash
+    # Run with go run
+    openenvx proxy run goapp -- go run main.go
+
+    # Run compiled binary
+    openenvx proxy run goapp -- ./myserver
+    ```
+  </Tab>
+
+  <Tab title="Python">
+    ```bash
+    # Flask development server
+    openenvx proxy run flaskapp -- flask run
+
+    # Django
+    openenvx proxy run django -- python manage.py runserver
+
+    # Uvicorn (FastAPI)
+    openenvx proxy run fastapi -- uvicorn main:app
+    ```
+  </Tab>
+
+  <Tab title="Ruby">
+    ```bash
+    # Rails server
+    openenvx proxy run railsapp -- rails server
+
+    # Sinatra
+    openenvx proxy run sinatra -- ruby app.rb
+    ```
+  </Tab>
+</Tabs>
+
+## Working directory
+
+The command runs in your current working directory:
+
+```bash
+cd ~/projects/myapp
+openenvx proxy run myapp -- npm start
+```
+
+The application's working directory is set to `~/projects/myapp`, so relative paths in your code work as expected.
+
+## How it works
+
+Under the hood, the `proxy run` command:
+
+1. **Finds a free port** by asking the OS for an available TCP port
+2. **Starts your command** with `PORT` and `HOST` environment variables
+3. **Registers the route** in `~/.config/openenvx/routes.json`
+4. **Starts the proxy** (if not already running) on port 1355
+5. **Routes requests** from `https://<name>.localhost:1355` to `http://127.0.0.1:<port>`
+
+When you stop the application (Ctrl+C), the route is automatically removed.
+
+## Process management
+
+OpenEnvX tracks processes using PID (process ID) and process groups:
+
+- Each route stores the PID of the application process
+- On cleanup, the entire process group is terminated
+- Dead processes are automatically cleaned from the route table
+
+<Warning>
+  If your application spawns child processes, they will be terminated when you stop the parent. This is by design to prevent orphaned processes.
+</Warning>
+
+## Standard I/O
+
+Your application's stdin, stdout, and stderr are connected to your terminal:
+
+```bash
+openenvx proxy run myapp -- npm start
+# You'll see npm output directly in your terminal
+# Ctrl+C will terminate the process
+```
+
+This makes debugging and development workflows seamless.
+
+## Multiple applications
+
+Run multiple applications simultaneously, each with its own subdomain:
+
+```bash
+# Terminal 1
+openenvx proxy run api -- npm start
+# → https://api.localhost:1355
+
+# Terminal 2
+openenvx proxy run web -- npm run dev
+# → https://web.localhost:1355
+
+# Terminal 3
+openenvx proxy run admin -- go run main.go
+# → https://admin.localhost:1355
+```
+
+All applications share the same proxy instance on port 1355.
+
+## Next steps
+
+- Learn about [route management](/guides/managing-routes) and handling conflicts
+- Understand [TLS certificates](/guides/tls-certificates) for HTTPS support
+- Explore [agent integration](/guides/agent-integration) for AI-driven workflows

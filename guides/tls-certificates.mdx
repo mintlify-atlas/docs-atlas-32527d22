@@ -1,0 +1,306 @@
+---
+title: TLS certificates
+description: Learn how OpenEnvX generates and manages TLS certificates for secure HTTPS development
+---
+
+## Overview
+
+OpenEnvX automatically generates TLS certificates to enable HTTPS during development. The system uses a local Certificate Authority (CA) to issue certificates for `*.localhost` domains.
+
+## Certificate hierarchy
+
+OpenEnvX creates a two-level certificate hierarchy:
+
+```
+CA Certificate (10 year validity)
+└── Server Certificates (365 day validity)
+    ├── localhost
+    ├── *.localhost (wildcard)
+    └── Per-host certificates (myapp.localhost, api.localhost, ...)
+```
+
+All certificates use ECDSA with the P-256 curve for modern security and performance.
+
+## Automatic certificate generation
+
+Certificates are generated automatically when you start the proxy:
+
+```bash
+openenvx proxy run myapp -- npm start
+# → CA certificate generated
+# → Server certificate generated
+# → Proxy started with HTTPS
+```
+
+<Info>
+  Certificate generation happens once per installation. Subsequent runs reuse existing certificates unless they expire.
+</Info>
+
+## Certificate storage
+
+All certificates are stored in `~/.config/openenvx/`:
+
+```
+~/.config/openenvx/
+├── ca.pem              # CA certificate (public)
+├── ca-key.pem          # CA private key
+├── server.pem          # Default server certificate
+├── server-key.pem      # Server private key
+├── ca-trusted          # Marker file (CA is trusted)
+└── host-certs/         # Per-host certificates
+    ├── myapp_localhost.pem
+    ├── myapp_localhost-key.pem
+    ├── api_localhost.pem
+    └── api_localhost-key.pem
+```
+
+<Warning>
+  The `ca-key.pem` file is the root of trust for all certificates. Keep this file secure. If compromised, an attacker could issue certificates for any domain that your browser would trust.
+</Warning>
+
+## CA certificate details
+
+The CA certificate is generated with:
+
+```go
+template := &x509.Certificate{
+  SerialNumber:          randSerial(),
+  Subject:               pkix.Name{Organization: []string{"OpenEnvX CA"}},
+  NotBefore:             time.Now(),
+  NotAfter:              time.Now().AddDate(10, 0, 0), // 10 years
+  IsCA:                  true,
+  KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+  BasicConstraintsValid: true,
+}
+```
+
+Key properties:
+- **Validity**: 10 years
+- **Algorithm**: ECDSA P-256
+- **CA**: True (can issue other certificates)
+- **Organization**: OpenEnvX CA
+
+## Server certificate details
+
+Server certificates are issued for `localhost` and `*.localhost`:
+
+```go
+template := &x509.Certificate{
+  SerialNumber:          randSerial(),
+  Subject:               pkix.Name{Organization: []string{"OpenEnvX Server"}},
+  DNSNames:              []string{"localhost", "*.localhost"},
+  NotBefore:             time.Now(),
+  NotAfter:              time.Now().AddDate(0, 0, 365), // 365 days
+  KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+  ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+  BasicConstraintsValid: true,
+}
+```
+
+Key properties:
+- **Validity**: 365 days
+- **Algorithm**: ECDSA P-256
+- **SANs**: `localhost`, `*.localhost`
+- **Usage**: Server authentication
+
+## Per-host certificates
+
+For edge cases where wildcard certificates don't work (some browsers, RFC 2606 compliance), OpenEnvX generates per-host certificates:
+
+```go
+template := &x509.Certificate{
+  SerialNumber:          randSerial(),
+  Subject:               pkix.Name{Organization: []string{"OpenEnvX " + hostname}},
+  DNSNames:              []string{hostname}, // e.g., "myapp.localhost"
+  NotBefore:             time.Now(),
+  NotAfter:              time.Now().AddDate(0, 0, 365),
+  KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+  ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+  BasicConstraintsValid: true,
+}
+```
+
+These certificates are cached in memory and on disk for performance.
+
+## Certificate renewal
+
+Certificates are automatically renewed when they have less than 24 hours until expiration:
+
+```go
+if time.Until(cert.NotAfter) > 24*time.Hour {
+  return cert, key, nil // still valid
+}
+// Generate new certificate
+```
+
+The proxy checks certificate validity on startup, so renewed certificates are picked up automatically.
+
+## Trusting the CA
+
+For browsers to trust your local certificates, you must trust the OpenEnvX CA:
+
+<Tabs>
+  <Tab title="macOS">
+    The CA is automatically added to your login keychain:
+
+    ```bash
+    security add-trusted-cert -r trustRoot \
+      -k ~/Library/Keychains/login.keychain-db \
+      ~/.config/openenvx/ca.pem
+    ```
+
+    You may be prompted for your password to authorize the change.
+
+    <Info>
+      The `-r trustRoot` flag marks the CA as trusted for all purposes.
+    </Info>
+  </Tab>
+
+  <Tab title="Linux">
+    The CA is copied to the system trust store:
+
+    ```bash
+    sudo cp ~/.config/openenvx/ca.pem \
+      /usr/local/share/ca-certificates/openenvx-ca.crt
+    sudo update-ca-certificates
+    ```
+
+    You'll need sudo privileges for this operation.
+
+    <Info>
+      After running `update-ca-certificates`, the CA is trusted system-wide for all applications.
+    </Info>
+  </Tab>
+
+  <Tab title="Windows">
+    <Warning>
+      Windows is not currently supported. CA trust management will be added in a future release.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Trust marker file
+
+Once the CA is trusted, OpenEnvX creates a marker file:
+
+```bash
+~/.config/openenvx/ca-trusted
+```
+
+This prevents repeated trust operations on subsequent runs. If you regenerate the CA, the marker is removed and trust must be re-established.
+
+## Dynamic certificate selection
+
+The proxy uses SNI (Server Name Indication) to serve the correct certificate:
+
+```go
+tlsConfig := &tls.Config{
+  GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+    host := hello.ServerName // e.g., "myapp.localhost"
+    if host == "" {
+      host = "localhost"
+    }
+    return GetCertForHost(stateDir, host, caCert, caKey)
+  },
+}
+```
+
+This allows the proxy to serve different certificates based on the hostname, improving compatibility.
+
+## Protocol detection
+
+The proxy supports both HTTP and HTTPS on the same port (1355) using protocol detection:
+
+```go
+func (p *peekListener) Accept() (net.Conn, error) {
+  conn, err := p.Listener.Accept()
+  b := make([]byte, 1)
+  io.ReadFull(conn, b)
+  if b[0] == 0x16 { // TLS ClientHello
+    return tls.Server(peeked, p.tlsConfig), nil
+  }
+  return peeked, nil // Plain HTTP
+}
+```
+
+<Info>
+  The first byte of a TLS handshake is always `0x16` (TLS ClientHello). This allows the proxy to detect whether the client is using HTTPS or HTTP.
+</Info>
+
+## Browser warnings
+
+If you see browser warnings about untrusted certificates:
+
+1. **Check trust status**: Verify the CA is in your system trust store
+2. **macOS**: Open Keychain Access and search for "OpenEnvX CA"
+3. **Linux**: Check `/etc/ssl/certs/` for the CA certificate
+4. **Restart browser**: Some browsers cache certificate trust decisions
+
+<Warning>
+  Never click through certificate warnings in production. Self-signed certificates are only safe for local development.
+</Warning>
+
+## Certificate rotation
+
+To rotate certificates (e.g., after a compromise):
+
+```bash
+# Stop the proxy
+openenvx proxy stop
+
+# Remove all certificates
+rm -rf ~/.config/openenvx/ca.pem \
+       ~/.config/openenvx/ca-key.pem \
+       ~/.config/openenvx/server.pem \
+       ~/.config/openenvx/server-key.pem \
+       ~/.config/openenvx/ca-trusted \
+       ~/.config/openenvx/host-certs/
+
+# Restart the proxy (new certificates generated)
+openenvx proxy run myapp -- npm start
+
+# Re-trust the new CA
+```
+
+You'll need to trust the new CA in your system trust store.
+
+## Security considerations
+
+<Warning>
+  **Local development only**: OpenEnvX certificates are for local development. Never use them in production or share them with others.
+</Warning>
+
+- The CA private key (`ca-key.pem`) has file permissions `0600` (owner read/write only)
+- Server private keys have permissions `0600`
+- Certificate files have permissions `0644` (world-readable, which is safe for public certificates)
+- The CA is valid for 10 years, but you can rotate it anytime
+- Per-host certificates are valid for 365 days and auto-renew
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Certificate warnings in browser">
+    - Trust the CA certificate (see platform-specific instructions above)
+    - Restart your browser after trusting
+    - Check that `~/.config/openenvx/ca.pem` exists
+    - Verify the CA is in your system trust store
+  </Accordion>
+
+  <Accordion title="Certificate expired">
+    - Delete the expired certificate (proxy will regenerate it)
+    - Check system time (expired = time in the past)
+    - Restart the proxy to pick up new certificates
+  </Accordion>
+
+  <Accordion title="CA trust failed">
+    - **macOS**: Run with sudo if login keychain is locked
+    - **Linux**: Ensure you have sudo privileges
+    - Manually trust: see platform-specific commands above
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+- Learn how to [run applications](/guides/running-applications) with HTTPS
+- Understand [route management](/guides/managing-routes)
+- Explore [agent integration](/guides/agent-integration) for automation

@@ -1,0 +1,229 @@
+---
+title: openenvx proxy stop
+description: Stop the OpenEnvX proxy daemon
+---
+
+## Synopsis
+
+```bash
+openenvx proxy stop
+```
+
+Stop the proxy daemon running on port 1355. This terminates the HTTPS proxy server but does not affect any running applications.
+
+## Arguments
+
+This command takes no arguments.
+
+## Flags
+
+This command has no flags.
+
+## How It Works
+
+The stop command attempts to terminate the proxy daemon using two methods:
+
+### Method 1: PID File (Preferred)
+
+1. **Read PID** - Reads the proxy process ID from `~/.config/openenvx/proxy.pid`
+2. **Get Process Group** - Finds the process group ID using `Getpgid()`
+3. **Send SIGTERM** - Sends termination signal to the entire process group
+4. **Cleanup** - Removes the PID file
+5. **Success** - Prints `proxy stopped`
+
+### Method 2: Port-Based Fallback
+
+If no PID file exists (e.g., proxy was started in-process by `proxy run`):
+
+1. **Find Process** - Uses `lsof -ti tcp:1355` to find processes listening on port 1355
+2. **Kill Process** - Sends SIGTERM to each found process
+3. **Success** - Prints `proxy stopped` if any process was killed
+4. **Not Running** - Returns error if no process found
+
+<Note>
+The proxy daemon is typically started automatically by `openenvx proxy run`. You may never need to manually stop it unless you're troubleshooting or shutting down all services.
+</Note>
+
+## Examples
+
+### Basic Usage
+
+```bash
+$ openenvx proxy stop
+proxy stopped
+```
+
+### When Proxy Is Not Running
+
+```bash
+$ openenvx proxy stop
+proxy not running (no PID file, nothing on port 1355)
+```
+
+## Output
+
+<ResponseField name="success" type="string">
+  **Value:** `proxy stopped`
+  
+  Printed to stdout when the proxy daemon is successfully terminated.
+</ResponseField>
+
+## Error Messages
+
+### Proxy Not Running
+
+```
+proxy not running (no PID file, nothing on port 1355)
+```
+
+**Meaning:** The proxy daemon is not currently running.
+
+**Context:** 
+- No `proxy.pid` file exists in `~/.config/openenvx/`
+- No process is listening on port 1355
+
+**Solution:** No action needed - the proxy is already stopped.
+
+### Kill Proxy Error
+
+```
+kill proxy: <error details>
+```
+
+**Meaning:** The PID file exists, but the process couldn't be terminated.
+
+**Possible causes:**
+- Process already exited but PID file remains (stale PID)
+- Permission denied
+- Process is in uninterruptible sleep
+
+**Solution:** Manually remove the PID file and check if anything is on port 1355:
+
+```bash
+rm ~/.config/openenvx/proxy.pid
+lsof -i :1355
+```
+
+## Exit Codes
+
+<ResponseField name="0" type="exit code">
+  **Success** - Proxy was stopped successfully
+</ResponseField>
+
+<ResponseField name="1" type="exit code">
+  **Error** - Proxy was not running or couldn't be stopped
+</ResponseField>
+
+## What Gets Stopped
+
+### Proxy Daemon Only
+
+This command **only stops the proxy daemon** (the HTTPS server on port 1355). It does **not** stop:
+
+- Applications registered with `proxy run`
+- Their background processes
+- Any other services
+
+<Warning>
+After stopping the proxy, your `*.localhost` URLs will no longer work. Any running applications started with `proxy run` will continue running but won't be accessible via their HTTPS URLs.
+</Warning>
+
+### Route Registrations
+
+Route registrations in `~/.config/openenvx/routes.json` are **not removed**. When you restart the proxy (by running another `proxy run`), any routes for still-running processes will remain valid.
+
+## Technical Details
+
+### Process Group Termination
+
+OpenEnvX uses process groups to ensure clean shutdowns:
+
+```go
+pgid, err := syscall.Getpgid(pid)
+if err == nil {
+    syscall.Kill(-pgid, syscall.SIGTERM) // Negative PID = entire group
+}
+```
+
+This ensures:
+- All child processes are terminated
+- No orphaned processes remain
+- Clean resource cleanup
+
+### Port-Based Discovery
+
+When no PID file exists, OpenEnvX uses `lsof` to find the process:
+
+```bash
+lsof -ti tcp:1355
+```
+
+This returns all process IDs listening on TCP port 1355. Each is sent a SIGTERM signal.
+
+### State Directory
+
+Proxy state is stored in:
+- `~/.config/openenvx/` (Linux)
+- `$XDG_CONFIG_HOME/openenvx/` (if XDG_CONFIG_HOME is set)
+
+Files:
+- `proxy.pid` - Process ID of the proxy daemon
+- `routes.json` - Active route registrations
+- Certificate files for TLS
+
+## Common Use Cases
+
+### Troubleshooting
+
+If your proxy seems stuck or behaving incorrectly:
+
+```bash
+# Stop the proxy
+openenvx proxy stop
+
+# Start fresh with a new app
+openenvx proxy run myapp -- npm start
+```
+
+### Shutting Down All Services
+
+To completely shut down your development environment:
+
+```bash
+# Stop all apps (Ctrl+C in each terminal running proxy run)
+
+# Stop the proxy daemon
+openenvx proxy stop
+```
+
+### Freeing Port 1355
+
+If you need port 1355 for something else:
+
+```bash
+openenvx proxy stop
+```
+
+## Comparison with Application Termination
+
+| Action | Proxy Daemon | Applications | Routes |
+|--------|-------------|--------------|--------|
+| `proxy stop` | ✓ Stopped | ✗ Still running | ✗ Kept |
+| Ctrl+C in `proxy run` | ✗ Keeps running | ✓ Stopped | ✓ Removed |
+
+<Note>
+The proxy daemon is designed to persist across multiple application runs. Think of it as infrastructure that supports your apps, not tied to any single application's lifecycle.
+</Note>
+
+## Automatic Cleanup
+
+OpenEnvX automatically cleans up stale routes:
+
+- When the proxy reloads routes, it checks if each process is still alive
+- Dead processes are automatically removed from `routes.json`
+- You don't need to manually clean up crashed applications
+
+## See Also
+
+- [proxy run](/cli/proxy-run) - Run and register applications
+- [CLI Overview](/cli/overview) - Complete CLI reference
